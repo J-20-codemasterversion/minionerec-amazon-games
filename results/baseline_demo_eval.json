@@ -1,0 +1,19 @@
+{
+  "demo_users": 50,
+  "all_users": 200,
+  "demo_metrics": {
+    "recall_hr": 0.02,
+    "coarse_hr": 0.02,
+    "fine_hr": 0.08,
+    "final_hr": 0.04,
+    "final_ndcg": 0.0252
+  },
+  "all_metrics": {
+    "recall_hr": 0.055,
+    "coarse_hr": 0.055,
+    "fine_hr": 0.05,
+    "final_hr": 0.045,
+    "final_ndcg": 0.024
+  },
+  "best_fm_val_auc": 0.6680851063829787
+}

@@ -1,0 +1,121 @@
+# ============================
+# Secrets — NEVER commit
+# ============================
+*.csv  # blanket: catches SecretKey-*.csv etc.; lift later if you need data CSVs
+.env
+.env.*
+secrets/
+credentials*
+*.pem
+*.key
+**/.cos.conf
+SecretKey*
+
+# ============================
+# Large model weights / checkpoints
+# ============================
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+checkpoint-*/
+output/
+**/best_collision_model.pth
+rqkmeans_plus_ckpt/
+
+# ============================
+# Large data
+# ============================
+*.npy
+*.npz
+*.parquet
+data/Amazon18/
+data/Amazon/
+data/Games/
+data/Office_Products/
+**/Amazon18/
+**/text_emb*/
+
+# ============================
+# Logs / runs
+# ============================
+*.log
+nohup.out
+runs/
+wandb/
+tb_logs/
+events.out.tfevents.*
+
+# ============================
+# Python
+# ============================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# ============================
+# Notebooks
+# ============================
+.ipynb_checkpoints/
+.virtual_documents/
+*.ipynb_checkpoints
+
+# ============================
+# OS
+# ============================
+.DS_Store
+Thumbs.db
+
+# ============================
+# IDE / editors
+# ============================
+.vscode/
+.idea/
+.codebuddy/
+.cursor/
+*.swp
+*.swo
+*~
+
+# ============================
+# Project-specific
+# ============================
+test_subset_*.csv
+sft_games_*.log
+eval.log
+*.pid
+demo_pack.tar.gz
+generated-images/
+presentation/
+minionerec_agent/
+
+# ============================
+# But DO keep these (whitelist)
+# ============================
+!data/sample/**
+!docs/images/**
+!results/*.json
+!results/*.txt
+!**/README.md

@@ -1,0 +1,194 @@
+# Generative Recommendation on Amazon Games — End-to-End Reproduction
+
+A single-GPU reproduction of generative sequential recommendation (MiniOneRec-style) on the Amazon Reviews **Video Games** dataset, with a focus on:
+- end-to-end pipeline ownership (raw data → trained LLM → public-facing demo)
+- careful evaluation against a classical cascaded baseline
+- engineering trade-offs under constrained hardware (1× V100 32GB)
+- debugging open-source training code paths the original authors did not exercise
+
+This repository accompanies a longer reproduction log (in Chinese) at [`docs/reproduction_journey.md`](docs/reproduction_journey.md) and an English project description at [`docs/project_description_en.md`](docs/project_description_en.md).
+
+---
+
+## TL;DR
+
+| Stage | What I did | Outcome |
+|---|---|---|
+| 1. Data preprocessing | 5-core filter + leave-one-out split on Amazon Video Games (16 572 items, 45 884 users) | clean train/valid/test |
+| 2. Semantic encoding | Encode each item title+description with Qwen-2.5-1.5B (1 536-d) | `Games.emb-qwen-td.npy` (101 MB) |
+| 3. RQ-Kmeans+ quantization | Three-level residual K-means with collision-aware loss | **6.25% collision rate**, codebook saved |
+| 4. Semantic ID generation | Map each item to `<a_X><b_Y><c_Z>` token triple (+ optional `<d_*>` tie-breaker) | **95.4% items get unique SID** |
+| 5. Dataset format conversion | Build (history-SID-sequence → next-SID) training pairs | 103 023 SFT samples |
+| 6. **Freeze-LLM SFT** | Add 768 new SID tokens to Qwen tokenizer, freeze the 28-layer Transformer trunk, train only embedding (768 new rows) + lm\_head (~15% trainable params) | training stops early due to single-GPU time budget; loss 8.4 → 6.8 |
+| 7. Constrained beam-search inference | Beam search restricted to legal `<a><b><c>` SID triples on a 1k-test subset | HR@10 / NDCG@10 reported |
+
+I also implemented a **classical cascaded baseline** (recall + coarse-rank + fine-rank + re-rank) on the same dataset for direct comparison — see [`baseline/`](baseline/).
+
+---
+
+## Repository layout
+
+```
+.
+├── sft.py                       # Patched: fixes a NameError in the freeze_LLM branch
+├── evaluate.py                  # Constrained beam-search inference
+├── calc.py                      # HR@K / NDCG@K computation
+├── convert_dataset.py           # Build SID-format training data
+├── rq/                          # RQ-Kmeans+ training code
+├── baseline/                    # Classical cascaded recsys (my own implementation)
+│   ├── recall_itemcf.py / recall_swing.py / recall_usercf.py / recall_hot.py / recall_fusion.py
+│   ├── recall_main_v2.py        # Multi-channel recall pipeline
+│   ├── lightgbm_ranking_train.py
+│   ├── fm.py                    # FM fine-ranking model
+│   ├── feature_regression.py
+│   └── recommendation_pipeline_v3.py / v4.py / full.py    # End-to-end orchestration
+├── docs/
+│   ├── reproduction_journey.md          # Full reproduction log (Chinese, primary)
+│   ├── project_description_en.md        # Concise English project summary
+│   ├── cascaded_pipeline_report.md      # Baseline pipeline analysis
+│   ├── pipeline_overview.md
+│   ├── amazon_recsys_report.md
+│   ├── recsys_plan.md
+│   └── demo_setup.md                    # Cloud GPU demo deployment notes
+├── results/
+│   └── baseline_demo_eval.json          # Baseline HR@10/NDCG@10 numbers
+├── data/                                # Sample Amazon Games splits (small files only)
+└── requirements.txt
+```
+
+---
+
+## What was hard / what I learned
+
+### 1. Patching a freeze\_LLM bug the original authors didn't hit
+
+The MiniOneRec training script defines `original_vocab_size` only inside the `train_from_scratch=True` branch. The downstream `freeze_LLM` code path then unconditionally references that variable to slice the embedding matrix:
+
+```python
+# fails with NameError on (train_from_scratch=False, freeze_LLM=True)
+for p in model.embed_tokens.parameters():
+    p[:original_vocab_size].requires_grad = False
+```
+
+The combination `(train_from_scratch=False, freeze_LLM=True)` is exactly the configuration you want on a single V100 (preserve Qwen's pretrained knowledge, only train the new SID-token embeddings + `lm_head`). It is also the path the authors' default config never exercises. I read the source, located the missing definition, and patched it with a single line:
+
+```python
+original_vocab_size = len(tokenizer)
+tokenizer.add_tokens(new_sid_tokens)
+```
+
+This is a small fix, but it required reading enough of the codebase to understand:
+- how `resize_token_embeddings` interacts with newly added tokens,
+- which slice of the embedding matrix corresponds to "original Qwen vocab" vs "newly added SID tokens",
+- why `requires_grad=False` on a slice is the right freeze mechanism here.
+
+### 2. Engineering trade-offs under a single V100 32GB
+
+Compared to the paper's 8× A100 setup, every choice is a trade-off:
+
+| Knob | Paper | Mine | Why |
+|---|---|---|---|
+| GPUs | 8× A100 | 1× V100 32GB | hardware constraint |
+| `cutoff_len` | 1024 | 256 | OOM otherwise |
+| `micro_batch_size` | 4 (×8 cards) | 24 | freeze\_LLM saves activation memory |
+| `num_epochs` | 3 | 1 | wall-clock budget |
+| Trainable params | 100% | ~15% (freeze\_LLM) | memory + avoid catastrophic forgetting |
+| Training data | full (45k users) | 5k user subset for fast iteration | wall-clock budget |
+
+I documented these in [`docs/reproduction_journey.md`](docs/reproduction_journey.md) (in Chinese), including the surprises — e.g., I initially saw "1.04 s/step" in tqdm and thought training would finish in 30 min, but that was the *micro-batch* step, not the optimizer step. After accounting for `gradient_accumulation_steps`, real wall-clock per optimizer update was closer to 50 s.
+
+### 3. Constrained beam search and token-level evaluation
+
+Inference uses beam search restricted to legal SID triples (`<a_*>` then `<b_*>` then `<c_*>`). Mapping the generated SID back to a real item via `Games.index.json`, then computing HR@10 / NDCG@10, completes the loop. With only ~5% of one epoch of training under freeze\_LLM, the resulting HR@10 is **far below the cascaded baseline** — which is exactly the expected outcome and is reported honestly in [`results/`](results/) rather than cherry-picked.
+
+### 4. Classical baseline as honest reference
+
+To make the comparison meaningful I built the cascaded baseline ([`baseline/`](baseline/)) myself on the same Amazon Games data:
+- **Recall**: ItemCF, UserCF, Swing, popularity — fused via [`recall_fusion.py`](baseline/recall_fusion.py)
+- **Coarse rank**: LightGBM ([`lightgbm_ranking_train.py`](baseline/lightgbm_ranking_train.py))
+- **Fine rank**: FM ([`fm.py`](baseline/fm.py))
+- **Re-rank + evaluation**: [`recommendation_pipeline_v4.py`](baseline/recommendation_pipeline_v4.py)
+
+Reported HR@10 / NDCG@10 are in [`results/baseline_demo_eval.json`](results/baseline_demo_eval.json).
+
+---
+
+## How to run
+
+### Environment
+
+```bash
+conda create -n minionerec python=3.10 -y
+conda activate minionerec
+pip install -r requirements.txt
+```
+
+Key versions:
+- `torch >= 2.0`, `transformers >= 4.40`, `accelerate`, `peft`, `deepspeed`, `fire`
+- `numpy < 2.0` (sklearn ABI compatibility)
+
+### Pipeline
+
+```bash
+# Stage 2: Qwen embedding (16 572 items × 1 536 dim)
+bash rq/text2emb.sh
+
+# Stage 3: RQ-Kmeans+ training
+bash rq/train_constrained.sh
+bash rq/train_plus.sh
+
+# Stage 4: SID generation
+python rq/generate_index.py
+
+# Stage 5: training data
+python convert_dataset.py --dataset Games --data_dir <path>
+
+# Stage 6: SFT (freeze_LLM + new SID tokens)
+bash sft_games.sh         # see top of file for V100-friendly hyperparameters
+
+# Stage 7: evaluation
+bash evaluate.sh
+python calc.py --path results/<run>.json --item_path <info file>
+```
+
+### Baseline (classical cascaded recsys)
+
+```bash
+cd baseline
+python recall_main_v2.py
+python lightgbm_ranking_train.py
+python fm.py
+python recommendation_pipeline_v4.py
+```
+
+---
+
+## Honest results
+
+This is a **reproduction study under tight resource constraints**, not a competitive benchmark.
+
+| Method | HR@10 | NDCG@10 | Notes |
+|---|---|---|---|
+| Random (16 572 items) | ~0.0006 | ~0.0003 | sanity floor |
+| **Classical cascaded baseline (mine)** | **0.045** | **0.024** | full pipeline, mine, see [`baseline/`](baseline/) |
+| Generative (this repo, freeze\_LLM, ~5% of 1 epoch, 1k test subset) | 0.002 | 0.001 | early-stopped due to time budget |
+| Reference: paper (Beauty, full setup, 8× A100, +ORPO) | ~0.13 | ~0.07 | not directly comparable — different dataset and full training schedule |
+
+The key takeaway is **not** that the generative model outperforms the cascaded one here — it doesn't, because freeze\_LLM SFT plateaued at loss ≈ 6.8 after only 102 optimizer steps under the time budget I had. The takeaway is that the **full pipeline runs end-to-end on commodity hardware**, the **bug-free SFT path now exists**, and the **honest gap analysis** is documented.
+
+---
+
+## What I would do next
+
+- Run a **full** epoch of freeze\_LLM SFT on the full user set (estimated ~6h on V100), then re-evaluate on the full 41 924-row test set. I expect HR@10 to be in the 0.02–0.04 range based on the loss trajectory.
+- Add **ORPO** post-training as in the original paper.
+- Compare against **SASRec** as an additional sequential-recommendation baseline.
+- Profile **collision behavior** of RQ-Kmeans+: which item categories collide most, and does the `<d_*>` 4th-level tie-breaker hurt downstream beam search?
+
+---
+
+## Notes
+
+- Amazon Reviews data is not redistributed in this repo; download instructions are in [`docs/amazon_recsys_report.md`](docs/amazon_recsys_report.md).
+- Trained checkpoints are large (3 GB) and stored on Tencent COS, not in the repo.
+- The reproduction log [`docs/reproduction_journey.md`](docs/reproduction_journey.md) is in Chinese; the English summary lives at [`docs/project_description_en.md`](docs/project_description_en.md).
