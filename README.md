@@ -187,8 +187,47 @@ The key takeaway is **not** that the generative model outperforms the cascaded o
 
 ---
 
+## Pretrained checkpoint (ModelScope)
+
+The reproduced Amazon Games SFT checkpoint (≈2.9 GB) is **not** stored in this Git repo. It is archived on ModelScope:
+
+- Model: [`woshiJ20/MiniOneRec-Amazon-Games-SFT`](https://www.modelscope.cn/models/woshiJ20/MiniOneRec-Amazon-Games-SFT)
+- Includes: `model.safetensors`, tokenizer/config, `data/Games.index.json` (item → Semantic ID map), and `results/` (constrained beam-search eval).
+
+> Note: the repo is currently **private**. Make it public or add collaborators before sharing, and log in with an access token from <https://modelscope.cn/my/myaccesstoken>.
+
+Download:
+
+```bash
+modelscope login --token <YOUR_TOKEN>
+modelscope download --model woshiJ20/MiniOneRec-Amazon-Games-SFT --local_dir ./games-sft
+```
+
+Load and run:
+
+```python
+import torch
+from modelscope import snapshot_download
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+model_dir = snapshot_download("woshiJ20/MiniOneRec-Amazon-Games-SFT")
+tokenizer = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+model = AutoModelForCausalLM.from_pretrained(
+    model_dir,
+    torch_dtype=torch.bfloat16,   # use torch.float32 on CPU-only machines
+    trust_remote_code=True,
+).eval()
+
+# The tokenizer already contains the added SID tokens (<a_*>/<b_*>/<c_*>).
+assert len(tokenizer) == 152460
+```
+
+The base LLM is `Qwen/Qwen2.5-1.5B-Instruct`; only the new SID-token embeddings + `lm_head` were trained (`freeze_LLM=True`). Constrained beam search must be restricted to legal `<a_*><b_*><c_*>` triples — see [`evaluate.py`](evaluate.py).
+
+---
+
 ## Notes
 
 - Amazon Reviews data is not redistributed in this repo; download instructions are in [`docs/amazon_recsys_report.md`](docs/amazon_recsys_report.md).
-- Trained checkpoints are large (3 GB) and stored on Tencent COS, not in the repo.
+- Trained checkpoints are large (3 GB); they are archived on **ModelScope** (`woshiJ20/MiniOneRec-Amazon-Games-SFT`, see above) and backed up on Tencent COS — not in this Git repo.
 - The reproduction log [`docs/reproduction_journey.md`](docs/reproduction_journey.md) is in Chinese; the English summary lives at [`docs/project_description_en.md`](docs/project_description_en.md).
