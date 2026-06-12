@@ -1,7 +1,9 @@
-# Generative Recommendation on Amazon Games — End-to-End Reproduction
+# 🎮 Next-Game Prediction, Generated Token by Token
+
+#### Reproducing MiniOneRec — LLM-based generative recommendation — on a single V100, benchmarked honestly against a classical recommender I built from scratch.
 
 > **Can a 1.5B LLM learn to *generate* the next product a user wants, token by token, instead of scoring a fixed candidate list?**
-> I rebuilt MiniOneRec from raw Amazon reviews to a loadable checkpoint on a single V100, then measured the honest gap against a classical recommender I wrote from scratch.
+> I took MiniOneRec from raw Amazon reviews all the way to a loadable checkpoint on one GPU, then measured the honest gap against a cascaded recommender written from scratch.
 
 <p>
 <img alt="status" src="https://img.shields.io/badge/status-reproduction%20study-blue">
@@ -21,7 +23,7 @@ Long log (Chinese): [`docs/reproduction_journey.md`](docs/reproduction_journey.m
 
 ---
 
-## Pipeline at a glance
+## 🛠 The pipeline, end to end
 
 | Stage | What I did | Outcome |
 |---|---|---|
@@ -36,13 +38,13 @@ A **classical cascaded baseline** (recall + coarse-rank + fine-rank + re-rank) o
 
 ---
 
-## Three things worth your time
+## 🔍 Three things worth your time
 
 ### 1. The `freeze_LLM` bug nobody upstream hit
 
 MiniOneRec defines `original_vocab_size` only inside the `train_from_scratch=True` branch, but the `freeze_LLM` path references it unconditionally — so `(train_from_scratch=False, freeze_LLM=True)` crashes with `NameError`. That combination is exactly what you want on a single V100 (keep Qwen's pretrained weights, train only the new SID embeddings + `lm_head`), and it is the path the default config never exercises. One-line fix, but it meant reading enough of the code to understand how `resize_token_embeddings` and slice-level `requires_grad=False` interact. The buggy original is kept as `sft.py.original_buggy` for an auditable diff.
 
-### 2. Trade-offs under one V100
+### 2. Squeezing an 8×A100 recipe onto one V100
 
 | Knob | Paper | Mine | Why |
 |---|---|---|---|
@@ -81,7 +83,7 @@ The generative model does **not** beat the baseline here — freeze_LLM SFT plat
 
 ---
 
-## Run it
+## ⚡ Run it yourself
 
 ```bash
 conda create -n minionerec python=3.10 -y && conda activate minionerec
@@ -100,7 +102,7 @@ cd baseline && python recall_main_v2.py && python lightgbm_ranking_train.py \
 
 ---
 
-## Pretrained checkpoint (ModelScope)
+## 📦 Pretrained checkpoint (ModelScope)
 
 The ≈2.9 GB SFT checkpoint is archived at [`woshiJ20/MiniOneRec-Amazon-Games-SFT`](https://www.modelscope.cn/models/woshiJ20/MiniOneRec-Amazon-Games-SFT) (currently **private** — make public or add collaborators to share).
 
