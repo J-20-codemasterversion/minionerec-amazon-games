@@ -1,12 +1,23 @@
 # Generative Recommendation on Amazon Games — End-to-End Reproduction
 
-A single-GPU reproduction of generative sequential recommendation (MiniOneRec-style) on the Amazon Reviews **Video Games** dataset, with a focus on:
-- end-to-end pipeline ownership (raw data → trained LLM → public-facing demo)
-- careful evaluation against a classical cascaded baseline
-- engineering trade-offs under constrained hardware (1× V100 32GB)
-- debugging open-source training code paths the original authors did not exercise
+> **Can a 1.5B LLM learn to *generate* the next product a user wants, token by token, instead of scoring a fixed candidate list?**
+> I rebuilt MiniOneRec from raw Amazon reviews all the way to a loadable checkpoint on a single V100, then measured the honest gap against a classical recommender I wrote from scratch.
 
-This repository accompanies a longer reproduction log (in Chinese) at [`docs/reproduction_journey.md`](docs/reproduction_journey.md) and an English project description at [`docs/project_description_en.md`](docs/project_description_en.md).
+<p>
+<img alt="status" src="https://img.shields.io/badge/status-reproduction%20study-blue">
+<img alt="hardware" src="https://img.shields.io/badge/trained%20on-1%C3%97V100%2032GB-success">
+<img alt="base model" src="https://img.shields.io/badge/base-Qwen2.5--1.5B-orange">
+<img alt="checkpoint" src="https://img.shields.io/badge/checkpoint-ModelScope-8A2BE2">
+</p>
+
+This is not a leaderboard win, and that is the point. It is the messier, more useful artifact: a pipeline that actually runs end-to-end on one commodity GPU, two real bugs in the upstream training code that had to be read and fixed before a single step would train, and a baseline strong enough to keep the generative model honest.
+
+**If you only read three things:**
+1. 🐛 [The `freeze_LLM` `NameError` nobody upstream ever hit](#1-patching-a-freeze_llm-bug-the-original-authors-didnt-hit) — and why that exact config is the one you actually want on a single GPU.
+2. 📉 [The honest results table](#honest-results) — the generative model *loses* to my classical baseline here, and I explain precisely why instead of hiding it.
+3. 🧩 [The checkpoint that forgot its own vocabulary](#5-a-checkpoint-that-forgot-its-own-vocabulary) — 795 trained embedding rows whose tokens the tokenizer had silently dropped, and the order-preserving script that brings them back.
+
+Full reproduction log (Chinese): [`docs/reproduction_journey.md`](docs/reproduction_journey.md) · English summary: [`docs/project_description_en.md`](docs/project_description_en.md).
 
 ---
 
@@ -110,6 +121,21 @@ To make the comparison meaningful I built the cascaded baseline ([`baseline/`](b
 - **Re-rank + evaluation**: [`recommendation_pipeline_v4.py`](baseline/recommendation_pipeline_v4.py)
 
 Reported HR@10 / NDCG@10 are in [`results/baseline_demo_eval.json`](results/baseline_demo_eval.json).
+
+### 5. A checkpoint that forgot its own vocabulary
+
+When I archived the trained checkpoint to ModelScope and loaded it back the way an outside user would, the model came up with **152,460** embedding rows while the tokenizer only knew **151,665** tokens. The 795 Semantic-ID tokens (`<a_*>`, `<b_*>`, `<c_*>`, plus 27 `<d_*>` tie-breakers) were baked into the embedding matrix yet completely missing from the saved tokenizer, so `tokenizer.encode("<a_133>")` quietly fell back to byte-level pieces and SID decoding produced garbage.
+
+The root cause is the one [`docs/debugging_log.md`](docs/debugging_log.md) already flags: `Trainer` does not write the tokenizer into intermediate checkpoints. What makes the fix non-trivial is that it has to be **order-preserving** — token id `151665 + k` must line up with the k-th trained embedding row, or the model silently degrades. Reproducing the training-time `sorted(set(...))` over `Games.index.json` restores that mapping exactly. That is what [`tools/rebuild_sid_tokenizer.py`](tools/rebuild_sid_tokenizer.py) does, with a contiguity assertion so a mismatched index file fails loudly instead of corrupting the model in silence.
+
+```bash
+python tools/rebuild_sid_tokenizer.py \
+    --model_dir   ./games-sft \
+    --index_path  ./games-sft/data/Games.index.json \
+    --expected_vocab 152460
+```
+
+The checkpoint published on ModelScope already has this fix applied, so the load snippet below works as-is.
 
 ---
 
